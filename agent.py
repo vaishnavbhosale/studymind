@@ -1,15 +1,16 @@
 import os
 import chromadb
 from rich.panel import Panel
-from rich import print  # 🔥 THIS IS MISSING
+from rich import print
 from dotenv import load_dotenv
 from google import genai
+from evals import keyword_score, llm_judge  # ✅ evals import
 
-# 🔥 Force load .env
+# 🔥 Load environment
 load_dotenv(dotenv_path=".env", override=True)
 
 api_key = os.getenv("GEMINI_API_KEY")
-print("AGENT KEY:", api_key)  # temporary debug
+print("AGENT KEY:", api_key)
 
 if not api_key:
     raise ValueError("API key not found in agent.py")
@@ -20,13 +21,15 @@ client = genai.Client(api_key=api_key)
 db_client = chromadb.PersistentClient(path="./db")
 collection = db_client.get_or_create_collection(name="studymind")
 
+
 def get_embedding(text):
-    """Get embedding using new google-genai library"""
+    """Get embedding using Gemini"""
     result = client.models.embed_content(
-      model="gemini-embedding-001",
+        model="gemini-embedding-001",  # or gemini-embedding-2
         contents=text
     )
     return result.embeddings[0].values
+
 
 def search_notes(query, n_results=3):
     """Search your notes for relevant chunks"""
@@ -37,9 +40,10 @@ def search_notes(query, n_results=3):
     )
     return results
 
+
 def ask(question):
     """Ask a question and get answer from your notes"""
-    print(f"\n[bold blue]Searching your notes...[/bold blue]")
+    print("\n[bold blue]Searching your notes...[/bold blue]")
 
     results = search_notes(question)
 
@@ -54,7 +58,9 @@ def ask(question):
         results["documents"][0],
         results["metadatas"][0]
     )):
-        context_parts.append(f"[Excerpt {i+1} from {metadata['source']}]\n{doc}")
+        context_parts.append(
+            f"[Excerpt {i+1} from {metadata['source']}]\n{doc}"
+        )
         source = metadata["source"]
         if source not in sources:
             sources.append(source)
@@ -77,18 +83,41 @@ Student's question: {question}
 
 Answer:"""
 
+    # 🤖 Generate answer
     response = client.models.generate_content(
-       model="gemini-2.5-flash",
+        model="gemini-2.5-flash",
         contents=prompt
     )
 
-    print(Panel(
-        f"[bold white]{response.text}[/bold white]",
-        title="[bold green]Answer from your notes[/bold green]",
+    answer = response.text
+
+    # 🧠 Decide eval keywords dynamically
+    if "email" in question.lower():
+        expected_keywords = ["@", ".com"]
+    elif "link" in question.lower() or "url" in question.lower():
+        expected_keywords = ["http"]
+    else:
+        expected_keywords = []
+
+    # ✅ Run evals
+    score = keyword_score(answer, expected_keywords)
+    judge_result = llm_judge(client, question, answer, context)
+
+    # 🔥 Confidence logic
+    confidence = "HIGH" if score > 0.7 and judge_result else "LOW"
+
+    # 🎯 Print final output
+    print(Panel.fit(
+        f"{answer}\n\n"
+        f"[bold yellow]Eval Score:[/bold yellow] {score}\n"
+        f"[bold yellow]LLM Judge:[/bold yellow] {'PASS ✅' if judge_result else 'FAIL ❌'}\n"
+        f"[bold cyan]Confidence:[/bold cyan] {confidence}",
+        title="🤖 Answer from your notes",
         border_style="green"
     ))
 
     print(f"\n[dim]Sources used: {', '.join(sources)}[/dim]")
+
 
 def find_gaps(syllabus_topics):
     """Find what topics are missing from your notes"""
