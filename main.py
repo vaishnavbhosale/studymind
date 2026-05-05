@@ -5,15 +5,17 @@ from rich.prompt import Prompt
 from agent import ask, find_gaps
 from ingest import ingest_all_notes
 from dotenv import load_dotenv
-import os
 
 load_dotenv(override=True)
+
+
 def show_welcome():
     print(Panel(
         "[bold white]StudyMind — Your Personal Knowledge Agent[/bold white]\n"
         "[dim]Ask questions. Get answers from YOUR notes only.[/dim]",
         border_style="blue"
     ))
+
 
 def main():
     show_welcome()
@@ -48,10 +50,13 @@ def main():
                 topics.append(topic)
             if topics:
                 find_gaps(topics)
+            else:
+                print("[yellow]No topics entered.[/yellow]")
 
         elif choice == "4":
             print("\n[bold green]Goodbye! Good luck with your studies.[/bold green]")
             break
+
 
 if __name__ == "__main__":
     main()
