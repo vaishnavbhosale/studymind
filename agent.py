@@ -4,45 +4,92 @@ from rich.panel import Panel
 from rich import print
 from dotenv import load_dotenv
 from google import genai
-from evals import keyword_score, llm_judge  # ✅ evals import
+from evals import keyword_score, llm_judge
 
-# 🔥 Load environment
+
 load_dotenv(dotenv_path=".env", override=True)
 
 api_key = os.getenv("GEMINI_API_KEY")
-print("AGENT KEY:", api_key)
 
 if not api_key:
     raise ValueError("API key not found in agent.py")
 
 client = genai.Client(api_key=api_key)
 
-# Setup ChromaDB
 db_client = chromadb.PersistentClient(path="./db")
 collection = db_client.get_or_create_collection(name="studymind")
 
 
 def get_embedding(text):
-    """Get embedding using Gemini"""
+    """
+    Converts text into a list of numbers (embedding)
+    that represents its meaning mathematically.
+    Same model used for both storing and searching
+    so similarity comparisons are consistent.
+    """
     result = client.models.embed_content(
-        model="gemini-embedding-001",  # or gemini-embedding-2
+        model="gemini-embedding-001",
         contents=text
     )
     return result.embeddings[0].values
 
 
 def search_notes(query, n_results=3):
-    """Search your notes for relevant chunks"""
+    """
+    Converts the question into an embedding,
+    then finds the most semantically similar chunks
+    stored in ChromaDB.
+
+    Deduplication step added here to handle
+    overlapping chunks from sliding window chunking.
+    Without this, the same sentence could appear
+    twice in the context sent to Gemini —
+    wasting context window space and potentially
+    confusing the model.
+    """
     embedding = get_embedding(query)
+
     results = collection.query(
         query_embeddings=[embedding],
         n_results=n_results
     )
+
+    # --- Deduplication for sliding window overlap ---
+    # Overlapping chunks share their opening words.
+    # We use the first 50 characters as a fingerprint.
+    # If two chunks start the same way, they're duplicates
+    # and we only keep the first one.
+    seen = set()
+    unique_chunks = []
+    unique_metadatas = []
+
+    for doc, metadata in zip(
+        results["documents"][0],
+        results["metadatas"][0]
+    ):
+        fingerprint = doc[:50].strip()
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            unique_chunks.append(doc)
+            unique_metadatas.append(metadata)
+
+    # Replace results with deduplicated versions
+    # so the rest of the code works exactly as before
+    results["documents"][0] = unique_chunks
+    results["metadatas"][0] = unique_metadatas
+
     return results
 
 
 def ask(question):
-    """Ask a question and get answer from your notes"""
+    """
+    Full RAG pipeline:
+    1. Search notes for relevant chunks
+    2. Build context from top chunks
+    3. Send context + question to Gemini
+    4. Evaluate the answer
+    5. Display result with confidence score
+    """
     print("\n[bold blue]Searching your notes...[/bold blue]")
 
     results = search_notes(question)
@@ -83,7 +130,6 @@ Student's question: {question}
 
 Answer:"""
 
-    # 🤖 Generate answer
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt
@@ -91,7 +137,10 @@ Answer:"""
 
     answer = response.text
 
-    # 🧠 Decide eval keywords dynamically
+    # Keyword scoring — only used for specific question types
+    # where exact tokens matter (emails, URLs).
+    # For general questions expected_keywords is empty
+    # so we rely entirely on the LLM judge.
     if "email" in question.lower():
         expected_keywords = ["@", ".com"]
     elif "link" in question.lower() or "url" in question.lower():
@@ -99,14 +148,17 @@ Answer:"""
     else:
         expected_keywords = []
 
-    # ✅ Run evals
     score = keyword_score(answer, expected_keywords)
     judge_result = llm_judge(client, question, answer, context)
 
-    # 🔥 Confidence logic
-    confidence = "HIGH" if score > 0.7 and judge_result else "LOW"
+    # Confidence is HIGH only if LLM judge passes.
+    # Keyword score is a secondary signal used only
+    # when we have specific tokens to check for.
+    if not expected_keywords:
+        confidence = "HIGH" if judge_result else "LOW"
+    else:
+        confidence = "HIGH" if score > 0.7 and judge_result else "LOW"
 
-    # 🎯 Print final output
     print(Panel.fit(
         f"{answer}\n\n"
         f"[bold yellow]Eval Score:[/bold yellow] {score}\n"
@@ -120,7 +172,12 @@ Answer:"""
 
 
 def find_gaps(syllabus_topics):
-    """Find what topics are missing from your notes"""
+    """
+    Checks which topics from your syllabus
+    are covered in your notes and which are missing.
+    Runs a search for each topic — if no chunks
+    are returned, that topic is not in your notes.
+    """
     print("\n[bold yellow]Checking your notes for gaps...[/bold yellow]\n")
 
     missing = []

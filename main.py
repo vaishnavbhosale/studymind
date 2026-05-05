@@ -4,7 +4,10 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from agent import ask, find_gaps
 from ingest import ingest_all_notes
+from dotenv import load_dotenv
+import os
 
+load_dotenv(override=True)
 def show_welcome():
     print(Panel(
         "[bold white]StudyMind — Your Personal Knowledge Agent[/bold white]\n"

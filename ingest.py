@@ -5,18 +5,16 @@ from google import genai
 from rich import print
 from dotenv import load_dotenv
 
-# 🔥 FIXED loading
+
 load_dotenv(dotenv_path=".env", override=True)
 
 api_key = os.getenv("GEMINI_API_KEY")
-print("INGEST KEY:", api_key)
 
 if not api_key:
     raise ValueError("API key not found in ingest.py")
 
 client = genai.Client(api_key=api_key)
 
-# Setup ChromaDB
 db_client = chromadb.PersistentClient(path="./db")
 collection = db_client.get_or_create_collection(name="studymind")
 
