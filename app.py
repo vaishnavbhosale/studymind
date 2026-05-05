@@ -58,8 +58,7 @@ with tab1:
             st.warning("Please enter a question.")
         else:
             with st.spinner("Searching your notes..."):
-                # Capture the answer by temporarily redirecting
-                # ask() prints to terminal — we call search + generate directly
+        
                 from agent import search_notes
                 from evals import keyword_score, llm_judge
                 from google import genai

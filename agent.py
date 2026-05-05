@@ -1,4 +1,5 @@
 import os
+import logging
 import chromadb
 from rich.panel import Panel
 from rich import print
@@ -6,6 +7,12 @@ from dotenv import load_dotenv
 from google import genai
 from evals import keyword_score, llm_judge
 from shared.embeddings import get_embedding, content_fingerprint
+
+logging.basicConfig(
+    filename="studymind.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
 
 load_dotenv(dotenv_path=".env", override=True)
 
@@ -18,9 +25,6 @@ client = genai.Client(api_key=api_key)
 db_client = chromadb.PersistentClient(path="./db")
 collection = db_client.get_or_create_collection(name="studymind")
 
-# Minimum similarity threshold for gap detection.
-# ChromaDB returns cosine distance; 0 = identical, 2 = opposite.
-# Below this distance, a result is considered a genuine match.
 GAP_DISTANCE_THRESHOLD = 0.8
 
 
@@ -80,7 +84,14 @@ def ask(question):
 
     results = search_notes(question)
 
+    logging.info(
+        f"Query: {question} | "
+        f"Chunks retrieved: {len(results['documents'][0])} | "
+        f"Distances: {results['distances'][0]}"
+    )
+
     if not results["documents"][0]:
+        logging.warning(f"No chunks found for query: {question}")
         print("[red]No relevant content found in your notes.[/red]")
         return
 
@@ -123,8 +134,7 @@ Answer:"""
 
     answer = response.text
 
-    # Keyword scoring — only used for specific question types
-    # where exact tokens matter (emails, URLs).
+
     if "email" in question.lower():
         expected_keywords = ["@", ".com"]
     elif "link" in question.lower() or "url" in question.lower():
@@ -135,13 +145,18 @@ Answer:"""
     score = keyword_score(answer, expected_keywords)
     judge_result = llm_judge(client, question, answer, context)
 
-    # Confidence is HIGH only if LLM judge passes.
-    # Keyword score is a secondary signal used only when
-    # we have specific tokens to check for.
+
     if not expected_keywords:
         confidence = "HIGH" if judge_result else "LOW"
     else:
         confidence = "HIGH" if score > 0.7 and judge_result else "LOW"
+
+    logging.info(
+        f"Answer generated | "
+        f"Judge: {'PASS' if judge_result else 'FAIL'} | "
+        f"Confidence: {confidence} | "
+        f"Sources: {', '.join(sources)}"
+    )
 
     print(Panel.fit(
         f"{answer}\n\n"
@@ -175,6 +190,13 @@ def find_gaps(syllabus_topics):
         is_covered = (
             results["documents"][0]
             and results["distances"][0][0] < GAP_DISTANCE_THRESHOLD
+        )
+
+      
+        logging.info(
+            f"Gap check | Topic: {topic} | "
+            f"Covered: {is_covered} | "
+            f"Distance: {results['distances'][0][0] if results['documents'][0] else 'N/A'}"
         )
 
         if is_covered:
