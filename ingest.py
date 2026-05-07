@@ -1,4 +1,18 @@
+"""
+ingest.py
+
+PDF ingestion pipeline: reads PDFs, chunks text, embeds chunks,
+and upserts into ChromaDB.
+
+All paths (./db, ./notes) are resolved relative to this file's
+directory — NOT the current working directory. Previously, using
+"./db" caused two separate ChromaDB instances to be created
+depending on where you launched the script from, meaning queries
+would return empty results if you ran from the wrong folder.
+"""
+
 import os
+import time
 import PyPDF2
 from google import genai
 from rich import print
@@ -8,21 +22,28 @@ import chromadb
 
 from shared.embeddings import get_embeddings_batch
 
-load_dotenv(dotenv_path=".env", override=True)
+# Resolve paths relative to this file so they work regardless of
+# which directory the user launches the app from.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"), override=True)
 
 api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
-    raise ValueError("API key not found in ingest.py")
+    raise ValueError("GEMINI_API_KEY not found. Add it to your .env file.")
 
 client = genai.Client(api_key=api_key)
 
-db_client = chromadb.PersistentClient(path="./db")
+# Single shared DB path — all modules resolve to the same location
+DB_PATH = os.path.join(BASE_DIR, "db")
+db_client = chromadb.PersistentClient(path=DB_PATH)
 collection = db_client.get_or_create_collection(name="studymind")
 
 
-def extract_text_from_pdf(pdf_path):
+def extract_text_from_pdf(pdf_path: str) -> str:
     """
     Extracts text from a PDF file page by page.
+
     Note: PyPDF2 only handles text-layer PDFs.
     Scanned documents will return empty strings per page —
     consider adding an OCR fallback (e.g. pytesseract) for those.
@@ -37,7 +58,7 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 
-def chunk_text(text, chunk_size=500, overlap=100):
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
     """
     Splits text into overlapping word-based chunks.
 
@@ -61,8 +82,20 @@ def chunk_text(text, chunk_size=500, overlap=100):
     return chunks
 
 
-def ingest_pdf(pdf_path):
-    filename = os.path.basename(pdf_path)
+def ingest_pdf(pdf_path: str, display_name: str = None):
+    """
+    Ingests a single PDF into ChromaDB.
+
+    display_name parameter added to fix a bug in app.py where
+    Streamlit uploads to a temp path like /tmp/mynotes_abc123.pdf.
+    Without this, os.path.basename(pdf_path) would store the garbled
+    temp filename as the source metadata, making answers show wrong
+    source names. Now callers can pass the original filename explicitly.
+    """
+    # Use display_name if provided, otherwise fall back to the actual filename.
+    # This fixes the Streamlit temp-file naming bug.
+    filename = display_name or os.path.basename(pdf_path)
+
     print(f"[bold green]Reading:[/bold green] {filename}")
 
     text = extract_text_from_pdf(pdf_path)
@@ -73,10 +106,10 @@ def ingest_pdf(pdf_path):
     chunks = chunk_text(text)
     print(f"[blue]Split into {len(chunks)} chunks — embedding in batches...[/blue]")
 
-    # --- Batch embedding ---
-    # One API call for all chunks instead of N sequential calls.
-    # Dramatically faster for large PDFs.
-    BATCH_SIZE = 50  # stay within API limits
+    BATCH_SIZE = 50
+    MAX_RETRIES = 3
+    RETRY_DELAY = 2  # seconds
+
     all_embeddings = []
 
     for batch_start in track(
@@ -84,17 +117,23 @@ def ingest_pdf(pdf_path):
         description=f"Embedding {filename}..."
     ):
         batch = chunks[batch_start:batch_start + BATCH_SIZE]
-        try:
-            batch_embeddings = get_embeddings_batch(client, batch)
-            all_embeddings.extend(batch_embeddings)
-        except Exception as e:
-            print(f"[red]Embedding failed for batch starting at chunk {batch_start}: {e}[/red]")
-            # Fill with None so indices stay aligned with chunks
-            all_embeddings.extend([None] * len(batch))
 
-    # --- Upsert instead of add ---
-    # collection.add() throws if a chunk ID already exists (e.g. re-ingesting the same file).
-    # collection.upsert() safely overwrites — making ingest idempotent.
+        # Retry logic added: previously a single API blip would silently
+        # drop entire chunks from the vector DB with no recovery attempt.
+        # Now we retry up to MAX_RETRIES times before giving up on a batch.
+        for attempt in range(MAX_RETRIES):
+            try:
+                batch_embeddings = get_embeddings_batch(client, batch)
+                all_embeddings.extend(batch_embeddings)
+                break
+            except Exception as e:
+                if attempt < MAX_RETRIES - 1:
+                    print(f"[yellow]Retry {attempt + 1}/{MAX_RETRIES} for batch at chunk {batch_start}: {e}[/yellow]")
+                    time.sleep(RETRY_DELAY)
+                else:
+                    print(f"[red]Embedding failed after {MAX_RETRIES} attempts for batch at chunk {batch_start}: {e}[/red]")
+                    all_embeddings.extend([None] * len(batch))
+
     for i, (chunk, embedding) in enumerate(zip(chunks, all_embeddings)):
         if embedding is None:
             print(f"[red]Skipping chunk {i} due to embedding failure[/red]")
@@ -111,7 +150,11 @@ def ingest_pdf(pdf_path):
 
 
 def ingest_all_notes():
-    notes_folder = "./notes"
+    """
+    Ingests all PDFs from the ./notes folder.
+    Path is resolved relative to this file to avoid working-directory issues.
+    """
+    notes_folder = os.path.join(BASE_DIR, "notes")
 
     if not os.path.exists(notes_folder):
         print(f"[red]Folder '{notes_folder}' not found. Create it and add PDF files.[/red]")

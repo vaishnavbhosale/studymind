@@ -1,7 +1,32 @@
+"""
+main.py
+
+CLI entrypoint for StudyMind.
+
+Previously there were TWO main.py files:
+  - backend/main.py  (FastAPI)
+  - main.py          (CLI, this file)
+
+The FastAPI app has been moved to api.py to eliminate the ambiguity.
+Running the wrong main.py silently started the wrong app with no error,
+which was confusing. Now:
+  - python main.py          → CLI interface
+  - uvicorn api:app         → FastAPI server
+"""
+
 import os
+import sys
+
+# ─── Path fix ────────────────────────────────────────────────────────────────
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+# ─────────────────────────────────────────────────────────────────────────────
+
 from rich import print
 from rich.panel import Panel
 from rich.prompt import Prompt
+
 from agent import ask, find_gaps
 from ingest import ingest_all_notes
 from dotenv import load_dotenv

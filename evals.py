@@ -1,4 +1,14 @@
-def keyword_score(answer, expected_keywords):
+"""
+evals.py
+
+Evaluation utilities: keyword scoring and LLM-as-judge.
+Kept as a standalone module (not inside services/ or agent.py)
+so it can be imported by rag_service.py without creating any
+import cycle.
+"""
+
+
+def keyword_score(answer: str, expected_keywords: list[str]):
     """
     Returns the fraction of expected_keywords present in the answer.
 
@@ -13,7 +23,7 @@ def keyword_score(answer, expected_keywords):
     return score / len(expected_keywords)
 
 
-def llm_judge(client, question, answer, context):
+def llm_judge(client, question: str, answer: str, context: str) -> bool:
     """
     Scores the answer on three dimensions and returns True (PASS)
     only if all three scores exceed 0.7.
@@ -44,10 +54,9 @@ def llm_judge(client, question, answer, context):
     """
 
     result = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-2.0-flash",
         contents=prompt
     )
-
 
     for line in result.text.upper().splitlines():
         line = line.strip()
@@ -58,7 +67,7 @@ def llm_judge(client, question, answer, context):
     return False
 
 
-def hallucination_guard(answer):
+def hallucination_guard(answer: str) -> bool:
     """
     Returns True if the answer is a valid refusal for an out-of-scope question.
     Used in evals to confirm the system correctly declines rather than hallucinating.
